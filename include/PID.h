@@ -1,3 +1,7 @@
+#ifndef PID_INC
+#define PID_INC
+
+#include <stdint.h>
 
 typedef struct{
 	int32_t currentOutput;
@@ -20,3 +24,5 @@ void PID_setOutputLimits(PID_Handle_t pid, int32_t outputMax, int32_t outputMin)
 void PID_setCoefficients(PID_Handle_t pid, int32_t pTerm, int32_t iTerm, int32_t dTerm);
 int32_t PID_run(PID_Handle_t pid, int32_t targetValue, int32_t actualValue);
 int32_t PID_getCurrentOutput(PID_Handle_t pid);
+
+#endif
