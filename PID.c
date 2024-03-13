@@ -1,30 +1,32 @@
 #include <stdint.h>
 #include <math.h>
 
-#include <PID.h>
+#include "FreeRTOS.h"
+
+#include "PID.h"
 
 
-PID_Handle_t PID_create(int32_t pTerm, int32_t iTerm, int32_t dTerm){
-	PID_Handle_t pid = pvPortMalloc(sizeof(PID_Handle_t));
+PID_Handle_t * PID_create(int32_t pTerm, int32_t iTerm, int32_t dTerm){
+	PID_Handle_t * pid = pvPortMalloc(sizeof(PID_Handle_t));
 	
 	PID_reset(pid);
 	
 	return pid;
 }
 
-void PID_dispose(PID_Handle_t pid){
+void PID_dispose(PID_Handle_t * pid){
 	vPortFree(pid);
 }
 
 
 
-void PID_reset(PID_Handle_t pid){
+void PID_reset(PID_Handle_t * pid){
 	pid->lastError = INT32_MAX;
 	pid->accumulator = 0;
 	
 }
 
-void PID_setOutputLimits(PID_Handle_t pid, int32_t outputMax, int32_t outputMin){
+void PID_setOutputLimits(PID_Handle_t * pid, int32_t outputMax, int32_t outputMin){
 	if(outputMax < outputMin) return;
 	
 	pid->outMax = outputMax;
@@ -32,17 +34,17 @@ void PID_setOutputLimits(PID_Handle_t pid, int32_t outputMax, int32_t outputMin)
 	pid->outSpan = outputMax - outputMin;
 }
 
-void PID_setCoefficients(PID_Handle_t pid, int32_t pTerm, int32_t iTerm, int32_t dTerm){
+void PID_setCoefficients(PID_Handle_t * pid, int32_t pTerm, int32_t iTerm, int32_t dTerm){
 	pid->pTerm = pTerm;
 	pid->iTerm = iTerm;
 	pid->dTerm = dTerm;
 }
 
-int32_t PID_getCurrentOutput(PID_Handle_t pid){
+int32_t PID_getCurrentOutput(PID_Handle_t * pid){
 	return pid->currentOutput;
 }
 
-int32_t PID_run(PID_Handle_t pid, int32_t targetValue, int32_t actualValue){
+int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 	//first calculate the current error
 	int32_t error = actualValue - targetValue;
 	
@@ -94,7 +96,7 @@ int32_t PID_run(PID_Handle_t pid, int32_t targetValue, int32_t actualValue){
 	if(output < INT16_MIN) output = INT16_MIN;
 	
 	//scale into the selected output range
-	int32_t outputScaled = ((pid->outSpan * (output + INT16_MIN)) >> 16) pid->outMin;
+	int32_t outputScaled = ((pid->outSpan * (output + INT16_MIN)) >> 16) + pid->outMin;
 	
 	pid->currentOutput = outputScaled;
 	return outputScaled;
