@@ -12,7 +12,8 @@ PID_Handle_t * PID_create(int32_t pTerm, int32_t iTerm, int32_t dTerm){
 	PID_Handle_t * pid = pvPortMalloc(sizeof(PID_Handle_t));
 	
     PID_setCoefficients(pid, pTerm, iTerm, dTerm);
-    PID_setOutputFilter(pid, 0);
+    PID_setDeadband(pid, 0);
+    PID_setPTermFilter(pid, 0);
 	PID_reset(pid);
 	
 	return pid;
@@ -38,7 +39,7 @@ void PID_setOutputLimits(PID_Handle_t * pid, int32_t outputMax, int32_t outputMi
 	pid->outSpan = outputMax - outputMin;
 }
 
-void PID_setOutputFilter(PID_Handle_t * pid, uint32_t filterRatio){
+void PID_setPTermFilter(PID_Handle_t * pid, uint32_t filterRatio){
 	pid->lpFilterRatioA = PID_LP_SUM-filterRatio;
 	pid->lpFilterRatioB = filterRatio;
     
@@ -54,6 +55,10 @@ void PID_setCoefficients(PID_Handle_t * pid, int32_t pTerm, int32_t iTerm, int32
     PID_reset(pid);
 }
 
+void PID_setDeadband(PID_Handle_t * pid, int32_t deadBand){
+	pid->deadband = deadBand;
+}
+
 int32_t PID_getCurrentOutput(PID_Handle_t * pid){
 	return pid->currentOutput;
 }
@@ -65,6 +70,13 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 	//limit error to 16bit to prevent overflow during further calculations
 	if(error > INT16_MAX) error = INT16_MAX;
 	if(error < INT16_MIN) error = INT16_MIN;
+    
+    //check if the error is outside the deadband
+    if(abs(error) < pid->deadband){ 
+        //no => just return the last calculated value and invalidate the lastError Field
+        pid->lastError = INT32_MAX;
+        return pid->currentOutput;
+    }
                         
 	//do I calculation
 
@@ -80,8 +92,6 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 			pid->accumulator = INT32_MIN;
 		}
 	}
-
-	
 	
 	//do D calculation
 	
@@ -93,15 +103,21 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 	
 	pid->lastError = error;
 	
+    //is the output lowpass enabled?
+	if(pid->lpFilterRatioB > 0){
+        pid->lastLPError = ((error * pid->lpFilterRatioA) + (pid->lastLPError * pid->lpFilterRatioB)) >> PID_LP_SHIFT;
+    }else{
+        pid->lastLPError = error;
+    }
 
 
 	//generate output value from the individual terms
 	
 	//add terms together
 	int32_t output = 0;
-	output += (pid->pTerm * error) >> 10;
+	output += (pid->pTerm * pid->lastLPError) >> 9;
 	output += pid->accumulator;
-	output += (pid->dTerm * errorDifference) >> 10;
+	output += (pid->dTerm * errorDifference) >> 9;
     
     //TERM_printDebug(TERM_handle, "\rRunning PID: target=%d current=%d error=%d acc=%d out=%d!", targetValue, actualValue, error, pid->accumulator, output);
 	
@@ -112,14 +128,8 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 	//scale into the selected output range
 	int32_t outputScaled = PID_scaleOutput(pid, output);
     
-    //TERM_printDebug(TERM_handle, "\rRunning PID: target=%d current=%d error=%d acc=%d out=%d outScaled=%d!", targetValue, actualValue, error, pid->accumulator, output, outputScaled);
+    pid->currentOutput = outputScaled;
 	
-    //is the output lowpass enabled?
-	if(pid->lpFilterRatioB > 0){
-        pid->currentOutput = ((outputScaled * pid->lpFilterRatioA) + (pid->currentOutput * pid->lpFilterRatioB)) >> PID_LP_SHIFT;
-    }else{
-        pid->currentOutput = outputScaled;
-    }
     return pid->currentOutput;
 }
 
