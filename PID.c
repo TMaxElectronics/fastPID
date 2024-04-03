@@ -74,7 +74,7 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
     //check if the error is outside the deadband
     if(abs(error) < pid->deadband){ 
         //no => just return the last calculated value and invalidate the lastError Field
-        pid->lastError = INT32_MAX;
+        pid->lastError = 0;
         return pid->currentOutput;
     }
                         
