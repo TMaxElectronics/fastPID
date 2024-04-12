@@ -8,12 +8,14 @@
 
 static uint32_t PID_scaleOutput(PID_Handle_t * pid, int32_t output);
 
-PID_Handle_t * PID_create(int32_t pTerm, int32_t iTerm, int32_t dTerm){
+PID_Handle_t * PID_create(PID_Parameter_t * config){
 	PID_Handle_t * pid = pvPortMalloc(sizeof(PID_Handle_t));
+    
+    pid->currMeasHandle = NULL;
 	
-    PID_setCoefficients(pid, pTerm, iTerm, dTerm);
-    PID_setDeadband(pid, 0);
-    PID_setPTermFilter(pid, 0);
+    PID_setCoefficients(pid, config->pTerm, config->iTerm, config->dTerm);
+    PID_setDeadband(pid, config->deadband);
+    PID_setPTermFilter(pid, config->lowPass);
 	PID_reset(pid);
 	
 	return pid;
@@ -24,6 +26,31 @@ void PID_dispose(PID_Handle_t * pid){
 }
 
 
+
+void PID_startTransientMeasurements(PID_Handle_t * pid){
+    if(pid->currMeasHandle == NULL) pid->currMeasHandle = pvPortMalloc(sizeof(PID_Measurement_t));
+    
+    pid->currMeasHandle->starttime_counts = xTaskGetTickCount();
+    pid->currMeasHandle->state = PID_MS_RISETIME;
+    
+    pid->currMeasHandle->peakErrorNoise = 0;
+    pid->currMeasHandle->peakValueOvershoot = 0;
+}
+
+PID_Measurement_t * PID_endTransientMeasurements(PID_Handle_t * pid){
+    if(pid->currMeasHandle == NULL) return NULL;
+    
+    //clear measurement pointer to make sure nothing acesses it
+    PID_Measurement_t * ret = pid->currMeasHandle;
+    pid->currMeasHandle = NULL;
+    
+    //compute percentile overshoot from absolute values
+    ret->overshoot_percent = (ret->peakValueOvershoot * 100) / ret->targetValue;
+    ret->noise_percent = (ret->peakErrorNoise * 100) / ret->targetValue;
+    
+    //return it
+    return ret;
+}
 
 void PID_reset(PID_Handle_t * pid){
 	pid->lastError = INT32_MAX;
@@ -129,6 +156,58 @@ int32_t PID_run(PID_Handle_t * pid, int32_t targetValue, int32_t actualValue){
 	int32_t outputScaled = PID_scaleOutput(pid, output);
     
     pid->currentOutput = outputScaled;
+    
+    //check if any measurements are active atm. Also do this thread safe
+    vTaskEnterCritical();
+    PID_Measurement_t * meas = pid->currMeasHandle;
+    vTaskExitCritical();
+    
+    if(meas != NULL){
+        //yes => first check which state we are in
+        if(meas->state == PID_MS_RISETIME){
+            //we are measuring the rise time => check if we have exceeded the 90% threshold of the target value
+            //* 29491) >> 15 is equal to * 0.899993 but without floating point or division :P
+            if(actualValue > ((targetValue * 29491) >> 15)){
+                //yep 90% threshold was just exceeded => save time and go to next state
+                meas->state = PID_MS_STEADYSTATE;
+                meas->steadyCounter = 0;
+                
+                //calculate time                                                                                        uS per tick
+                meas->risetime_us = (xTaskGetTickCount() - meas->starttime_counts) * (1000000 / configTICK_RATE_HZ);
+            }
+            
+        }else if(meas->state == PID_MS_STEADYSTATE){
+            //we are measuring time to get to steady state. Here we just make sure that we are within the 90%-110% threshold for ten samples
+            //                  97% threshold                                   103% threshold
+            if((actualValue > ((targetValue * 31785) >> 15)) && (actualValue < ((targetValue * 16876) >> 14))){
+                //now check if we got our 10 samples
+                if(++meas->steadyCounter > 25){
+                    //yes => steady state reached. Switch state and save time
+                    meas->state = PID_MS_NOISE;
+                    
+                    //calculate time                                                                                                    uS per tick
+                    meas->timeForSteadyState_us = (xTaskGetTickCount() - meas->starttime_counts) * (1000000 / configTICK_RATE_HZ);
+                }
+            }else{
+                meas->steadyCounter = 0;
+            }
+        }
+        
+        //what peak are we looking for right now
+        if(meas->state == PID_MS_NOISE){
+            //we are measuring noise amplitude. This is the peak error once we have reached steady state
+            if(meas->peakErrorNoise < abs(error)) meas->peakErrorNoise = abs(error);
+            
+            //this state is the terminating one => no transition check required
+        }else{
+            //we're measuring overshoot
+            if(meas->peakValueOvershoot < error) meas->peakValueOvershoot = error;
+        }
+        
+        //and also remember what the target value was for percentile calculations
+        //TODO perhaps add a protection against this changing during measurement? That would ruin it lol
+        meas->targetValue = targetValue;
+    }
 	
     return pid->currentOutput;
 }
